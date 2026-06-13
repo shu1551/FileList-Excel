@@ -288,7 +288,6 @@ Sub ファイル一覧の実行()
     On Error GoTo 0
 
     If idxStart = 0 Or idxEnd = 0 Then Exit Sub
-    If ActiveSheet.Index <= idxStart Or ActiveSheet.Index >= idxEnd Then Exit Sub
 
     ActiveWindow.ScrollRow = 1
     ActiveWindow.ScrollColumn = 1
@@ -538,7 +537,11 @@ Sub ファイル呼び出し()
                         CreateObject("Shell.Application").ShellExecute TargetPath
                 End Select
             Else
-                MsgBox "ファイルが見つかりません。" & vbCrLf & TargetPath, vbExclamation
+                If FSO.FolderExists(TargetPath) Then
+                    Shell "C:\Windows\Explorer.exe """ & TargetPath & """", vbNormalFocus
+                Else
+                    MsgBox "ファイルが見つかりません。" & vbCrLf & TargetPath, vbExclamation
+                End If
             End If
 
         ' ■C列（参照フォルダ）または F列（直接フォルダ）の場合
@@ -1312,4 +1315,179 @@ Sub フォルダ一覧検索()
     フォルダ検索form.Left = Application.Left + ((Application.Width - フォルダ検索form.Width) / 2)
     フォルダ検索form.Show
 End Sub
+Sub フォルダ抽出の実行()
+    ' ファイル一覧の実行 のフォルダ版（sagyouフォルダ で収集→階層レベル順=深さ昇順、同レベル内は更新日時降順）
+    Dim path01 As String
+    Dim idxStart As Long
+    Dim idxEnd As Long
 
+    On Error Resume Next
+    idxStart = Sheets("全検索").Index
+    idxEnd = Sheets("設定").Index
+    On Error GoTo 0
+
+    If idxStart = 0 Or idxEnd = 0 Then Exit Sub
+
+    ActiveWindow.ScrollRow = 1
+    ActiveWindow.ScrollColumn = 1
+    Range("A1").Select
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    If ActiveSheet.FilterMode Then ActiveSheet.ShowAllData
+    ActiveSheet.UsedRange.Offset(1).EntireRow.Delete
+
+    If Range("J1").Value <> "" Then
+        path01 = Range("J1").Value
+    ElseIf Sheets("設定").Range("A2").Value <> "" Then
+        path01 = Sheets("設定").Range("A2").Value
+    Else
+        path01 = ActiveWorkbook.Path
+    End If
+    If Right(path01, 1) = "\" Then path01 = Left(path01, Len(path01) - 1)
+
+    cnt = 0
+    ReDim D1(1 To 1000)
+    ReDim D2(1 To 1000)
+    ReDim D3(1 To 1000)
+    ReDim D4(1 To 1000)
+    ReDim D5(1 To 1000)
+
+    SKIP_SUB = False
+    On Error Resume Next
+    If Sheets("設定").Range("A16").Value = 1 Then SKIP_SUB = True
+    On Error GoTo 0
+
+    Call sagyouフォルダ(path01)
+
+    If cnt = 0 Then
+        MsgBox "フォルダなし"
+        Application.Calculation = xlCalculationAutomatic
+        Application.StatusBar = False
+        Application.ScreenUpdating = True
+        Exit Sub
+    End If
+
+    ' B:F に書き込み＋深さ(階層レベル)を一時的に E列(サイズ)へ
+    Dim outArr() As Variant
+    Dim depthArr() As Variant
+    Dim r As Long, baseSlashes As Long, fp As String
+    baseSlashes = Len(path01) - Len(Replace(path01, "\", ""))
+    ReDim outArr(1 To cnt, 1 To 5)
+    ReDim depthArr(1 To cnt, 1 To 1)
+    For r = 1 To cnt
+        outArr(r, 1) = D1(r)
+        outArr(r, 2) = D2(r)
+        outArr(r, 3) = D3(r)
+        outArr(r, 4) = D4(r)
+        outArr(r, 5) = D5(r)
+        fp = D5(r) & "\" & D1(r)
+        depthArr(r, 1) = (Len(fp) - Len(Replace(fp, "\", ""))) - baseSlashes
+    Next r
+    Range("B2").Resize(cnt, 5).Value = outArr
+    Range("E2").Resize(cnt, 1).Value = depthArr
+
+    ' 階層レベル順（深さ昇順：まず最上位＝基準直下が全部並ぶ）→ 同レベル内は更新日時の新しい順
+    Range("B1").Resize(cnt + 1, 5).Sort _
+        Key1:=Range("E2"), Order1:=xlAscending, _
+        Key2:=Range("D2"), Order2:=xlDescending, _
+        Header:=xlYes, MatchCase:=False, _
+        Orientation:=xlTopToBottom, SortMethod:=xlPinYin
+
+    Range("E2").Resize(cnt, 1).ClearContents
+
+    Call keisen
+
+    Erase D1: Erase D2: Erase D3: Erase D4: Erase D5
+    cnt = 0
+
+    Application.StatusBar = False
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+End Sub
+
+Sub sagyouフォルダ(ByVal startPath As String)
+    ' === sagyou のフォルダ版：ディレクトリを1行ずつ D1..D5 に詰める（ファイルは無視）===
+    Dim wfd As WIN32_FIND_DATA
+    #If VBA7 Then
+        Dim hFind As LongPtr
+    #Else
+        Dim hFind As Long
+    #End If
+    Dim fName As String
+    Dim folderName As String
+    Dim searchPath As String
+
+    Dim stackPaths() As String
+    Dim stackCount As Long
+    Dim stackCapacity As Long
+    Dim currentPath As String
+
+    stackCapacity = 100
+    stackCount = 1
+    ReDim stackPaths(1 To stackCapacity)
+    If Right(startPath, 1) <> "\" Then startPath = startPath & "\"
+    stackPaths(1) = startPath
+
+    Do While stackCount > 0
+        currentPath = stackPaths(stackCount)
+        stackCount = stackCount - 1
+
+        Dim pathLen As Long
+        pathLen = Len(currentPath)
+        If pathLen > 1 Then
+            folderName = Mid(currentPath, InStrRev(Left(currentPath, pathLen - 1), "\") + 1)
+            If Right(folderName, 1) = "\" Then folderName = Left(folderName, Len(folderName) - 1)
+        Else
+            folderName = currentPath
+        End If
+
+        searchPath = currentPath & "*"
+        hFind = FindFirstFile(StrPtr(searchPath), wfd)
+        If hFind = INVALID_HANDLE Then GoTo NextFolder
+
+        Do
+            fName = GetFileName(wfd.cFileName)
+
+            If fName <> "" And fName <> "." And fName <> ".." Then
+                If (wfd.dwFileAttributes And FILE_ATTRIBUTE_DIRECTORY) <> 0 Then
+                    ' ディレクトリ → 1行として出力（ファイル行と同じ構造）
+                    cnt = cnt + 1
+                    If cnt > UBound(D1) Then
+                        Dim newSize As Long
+                        newSize = UBound(D1) * 2
+                        ReDim Preserve D1(1 To newSize)
+                        ReDim Preserve D2(1 To newSize)
+                        ReDim Preserve D3(1 To newSize)
+                        ReDim Preserve D4(1 To newSize)
+                        ReDim Preserve D5(1 To newSize)
+                    End If
+
+                    D1(cnt) = fName
+                    D2(cnt) = folderName
+                    D3(cnt) = FT2Date(wfd.ftLastWriteTime)
+                    D4(cnt) = ""
+                    D5(cnt) = Left(currentPath, Len(currentPath) - 1)
+
+                    If cnt Mod 5000 = 0 Then Application.StatusBar = cnt & " フォルダ処理中..."
+
+                    ' サブフォルダも探索（再帰の代わりにスタックへ）
+                    If Not SKIP_SUB Then
+                        stackCount = stackCount + 1
+                        If stackCount > stackCapacity Then
+                            stackCapacity = stackCapacity + 100
+                            ReDim Preserve stackPaths(1 To stackCapacity)
+                        End If
+                        stackPaths(stackCount) = currentPath & fName & "\"
+                    End If
+                End If
+                ' ファイルは無視
+            End If
+        Loop While FindNextFile(hFind, wfd) <> 0
+
+        FindClose hFind
+
+NextFolder:
+    Loop
+End Sub

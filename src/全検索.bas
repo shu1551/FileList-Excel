@@ -15,40 +15,58 @@ Sub 全検索シートで検索実行()
     Dim startRow As Long
     Dim endRow As Long
     Dim rngToCopy As Range
-    
+
     ' 画面更新と自動計算を停止して高速化
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
-    
+
     Set wsAll = Sheets("全検索")
-    
+
     If ActiveSheet.Name <> "全検索" Then GoTo Finalize
-    
+
     ' カーソルリセット（SendKeysの代わり）
     Application.GoTo Reference:=wsAll.Range("A1"), Scroll:=True
-    
+
     ' 既存データのクリア
     Call 全検索シートでシートクリア
-    
+
     CTV = wsAll.Range("B1").Value
     ' 空白・スペースのみの場合は終了
     If Trim(Replace(CTV, "　", " ")) = "" Then GoTo Finalize
-    
+
+    ' ▼検索前処理：フォルダ表示中のリストシートをファイル一覧へ戻す（混在防止）
+    '   フォルダ表示の目印＝サイズ列(E)が空。見つけたら そのシートで ファイル一覧の実行 を流して変換。
+    Dim k As Long
+    Dim wsList As Worksheet
+    For k = 2 To Sheets("設定").Index - 1
+        Set wsList = Sheets(k)
+        If wsList.Visible = xlSheetVisible Then
+            If wsList.Range("B2").Value <> "" And wsList.Range("E2").Value = "" Then
+                wsList.Activate
+                Call ファイル一覧の実行
+            End If
+        End If
+    Next k
+    wsAll.Activate
+    ' ファイル一覧の実行 が自動計算/画面更新を戻すので、検索ループ用に再設定
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
     ' ▼検索ループ開始
     ' 設定シートより左にあるシートを対象とするロジックを維持
     For i = 2 To Sheets("設定").Index - 1
         Set wsTarget = Sheets(i)
-        
+
         ' データがないシートはスキップ
         lastRowTarget = wsTarget.Cells(wsTarget.Rows.Count, 1).End(xlUp).Row
         If lastRowTarget <= 1 Then GoTo NextSheet
-        
+
         ' オートフィルタで検索（Field 1 = B列ファイル名）
         ' 既存フィルタ任せだと起点がA列（番号）にずれて0件になることがあるため、
         ' 起点B1と範囲を毎回明示して張り直す
         If wsTarget.AutoFilterMode Then wsTarget.AutoFilterMode = False
         wsTarget.Range("B1:F" & lastRowTarget).AutoFilter Field:=1, Criteria1:="*" & CTV & "*"
-        
+
         ' 検索結果（可視セル）があるか確認（ヘッダ以外にあるか）
         If wsTarget.Cells(wsTarget.Rows.Count, 1).End(xlUp).Row > 1 Then
             ' コピー対象の範囲を取得（ヘッダ除く）
@@ -56,41 +74,41 @@ Sub 全検索シートで検索実行()
             On Error Resume Next
             Set rngToCopy = wsTarget.Range("A1").CurrentRegion.Offset(1, 0).Resize(wsTarget.Range("A1").CurrentRegion.Rows.Count - 1).SpecialCells(xlCellTypeVisible)
             On Error GoTo 0
-            
+
             If Not rngToCopy Is Nothing Then
                 ' 貼り付け先の行を取得
                 pasteRow = wsAll.Cells(wsAll.Rows.Count, 1).End(xlUp).Row + 1
                 startRow = pasteRow
-                
+
                 ' コピー＆ペースト
                 rngToCopy.Copy wsAll.Cells(pasteRow, 1)
-                
+
                 ' 貼り付け後の最終行を取得
                 endRow = wsAll.Cells(wsAll.Rows.Count, 1).End(xlUp).Row
-                
+
                 ' G列にソースシートのB1セルの値を一括入力（ループさせない）
                 If endRow >= startRow Then
                     wsAll.Range(wsAll.Cells(startRow, 7), wsAll.Cells(endRow, 7)).Value = wsTarget.Range("B1").Value
                 End If
             End If
         End If
-        
+
 NextSheet:
         ' フィルタ解除
         If wsTarget.FilterMode Then wsTarget.ShowAllData
     Next i
-    
+
     ' ▼書式設定と連番
     Dim Z As Long
     Z = wsAll.Cells(wsAll.Rows.Count, 1).End(xlUp).Row
-    
+
     If Z > 1 Then
         ' 連番を一括入力
         wsAll.Range("A2").Value = 1
         If Z > 2 Then
             wsAll.Range("A2").AutoFill Destination:=wsAll.Range("A2:A" & Z), Type:=xlFillSeries
         End If
-        
+
         ' 書式設定を一括適用（ループさせない）
         With wsAll.Range("A1").CurrentRegion
             .Borders.LineStyle = True
@@ -98,13 +116,13 @@ NextSheet:
             .Font.Name = "Meiryo UI"
             .Font.FontStyle = "標準"
         End With
-        
+
         ' G列の配置設定
         With wsAll.Range("G2:G" & Z)
             .VerticalAlignment = xlCenter
             .WrapText = True
         End With
-        
+
         ' ヘッダの色
         wsAll.Range("A1:G1").Font.ThemeColor = xlThemeColorLight1
     End If
